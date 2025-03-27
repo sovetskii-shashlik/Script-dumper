@@ -1,0 +1,123 @@
+-- Dumper: Intercept user-executed scripts (by Grok)
+-- Dumps deobfuscated source code of user-executed scripts to ShashlikEx/dump_code/dump.txt
+
+-- Проверяем наличие функций эксплойта
+if not writefile or not makefolder or not isfolder then
+    error("This dumper requires an exploit with writefile and makefolder support (e.g., Synapse X, Krnl).")
+end
+
+-- Создаём папку и файл
+if not isfolder("ShashlikEx") then
+    makefolder("ShashlikEx")
+end
+task.wait()
+if not isfolder("ShashlikEx/dump_code") then
+    makefolder("ShashlikEx/dump_code")
+end
+task.wait()
+
+-- Таблица для хранения исходного кода
+local codeFragments = {}
+
+-- Функция для записи в файл
+local function logToFile(content)
+    local fileName = "ShashlikEx/dump_code/dump.txt"
+    writefile(fileName, content)
+end
+
+-- Функция для деобфускации (простое XOR-шифрование)
+local function deobfuscate(code)
+    local key = 0x5A
+    local decrypted = ""
+    for i = 1, #code do
+        local byte = string.byte(code, i)
+        decrypted = decrypted .. string.char(bit32.bxor(byte, key))
+    end
+    return decrypted
+end
+
+-- Функция для проверки, выглядит ли строка как зашифрованная
+local function isObfuscated(code)
+    local nonPrintableCount = 0
+    for i = 1, #code do
+        local byte = string.byte(code, i)
+        if byte < 32 or byte > 126 then
+            nonPrintableCount = nonPrintableCount + 1
+        end
+    end
+    return nonPrintableCount > (#code / 2)
+end
+
+-- Функция для обработки кода (деобфускация, если нужно)
+local function processCode(code)
+    if type(code) == "string" and code ~= "" then
+        if isObfuscated(code) then
+            return deobfuscate(code)
+        else
+            return code
+        end
+    end
+    return nil
+end
+
+-- Перехватываем load
+local originalLoad = load
+local customLoad = function(code, ...)
+    if type(code) == "string" then
+        local processed = processCode(code)
+        if processed then
+            table.insert(codeFragments, processed)
+        end
+    end
+    return originalLoad(code, ...)
+end
+
+-- Перехватываем loadstring
+local originalLoadstring = loadstring
+local customLoadstring = function(code, ...)
+    if type(code) == "string" then
+        local processed = processCode(code)
+        if processed then
+            table.insert(codeFragments, processed)
+        end
+    end
+    return originalLoadstring(code, ...)
+end
+
+-- Перехватываем execute (если доступно)
+local customExecute = function(code)
+    if type(code) == "string" then
+        local processed = processCode(code)
+        if processed then
+            table.insert(codeFragments, processed)
+        end
+    end
+    local func, err = customLoadstring(code)
+    if not func then
+        error(err)
+    end
+    return func()
+end
+
+-- Заменяем функции в глобальном окружении
+_G.load = customLoad
+_G.loadstring = customLoadstring
+_G.execute = customExecute
+if getfenv then
+    local env = getfenv()
+    env.load = customLoad
+    env.loadstring = customLoadstring
+    env.execute = customExecute
+end
+
+-- Основной цикл: сохраняем исходный код
+coroutine.wrap(function()
+    while true do
+        if #codeFragments > 0 then
+            local unifiedSource = table.concat(codeFragments, "\n")
+            logToFile(unifiedSource)
+            codeFragments = {}
+        end
+        task.wait(5) -- Интервал 5 секунд для частого обновления
+    end
+end)()
