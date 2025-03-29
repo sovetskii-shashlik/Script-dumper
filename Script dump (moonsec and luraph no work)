@@ -1,12 +1,5 @@
--- MOONSEC, LURAPH AND LUAOBFUSCATOR.COM NO EORK
--- MOONSEC, LURAPH AND LUAOBFUSCATOR.COM NO EORK
--- MOONSEC, LURAPH AND LUAOBFUSCATOR.COM NO EORK
--- MOONSEC, LURAPH AND LUAOBFUSCATOR.COM NO EORK
--- MOONSEC, LURAPH AND LUAOBFUSCATOR.COM NO EORK
--- MOONSEC, LURAPH AND LUAOBFUSCATOR.COM NO EORK
--- MOONSEC, LURAPH AND LUAOBFUSCATOR.COM NO EORK
--- MOONSEC, LURAPH AND LUAOBFUSCATOR.COM NO EORK
--- Dumper: Intercept user-executed scripts (by Grok)
+-- MOONSEC, LURAPH AND LUAOBFUSCATOR.COM NO WORK
+-- Dumper: Intercept user-executed scripts (by Grok, enhanced for VM/Metatable bypass)
 -- Dumps deobfuscated source code of user-executed scripts to ShashlikEx/dump_code/dump.txt
 
 -- Проверяем наличие функций эксплойта
@@ -30,7 +23,12 @@ local codeFragments = {}
 -- Функция для записи в файл
 local function logToFile(content)
     local fileName = "ShashlikEx/dump_code/dump.txt"
-    writefile(fileName, content)
+    local success, _ = pcall(function()
+        writefile(fileName, content)
+    end)
+    if not success then
+        rawset(_G, "dump_backup", content) -- Резервная копия в глобальной переменной
+    end
 end
 
 -- Функция для деобфускации (простое XOR-шифрование)
@@ -68,55 +66,95 @@ local function processCode(code)
     return nil
 end
 
--- Перехватываем load
-local originalLoad = load
-local customLoad = function(code, ...)
-    if type(code) == "string" then
-        local processed = processCode(code)
-        if processed then
-            table.insert(codeFragments, processed)
+-- Универсальный обход VM и метатаблиц
+local function HookFunction(original, hook, method_name)
+    local mt = getrawmetatable(original) or {}
+    local new_func = function(...)
+        hook(...)
+        if mt.__call then
+            return mt.__call(original, ...)
+        end
+        return original(...)
+    end
+    
+    if mt.__index or mt.__newindex then
+        local success, _ = pcall(setrawmetatable, original, {
+            __call = new_func,
+            __index = mt.__index,
+            __newindex = mt.__newindex
+        })
+        if not success then
+            return new_func -- Возвращаем прокси, если метатаблицу нельзя изменить
         end
     end
-    return originalLoad(code, ...)
+    return new_func
 end
 
--- Перехватываем loadstring
-local originalLoadstring = loadstring
-local customLoadstring = function(code, ...)
-    if type(code) == "string" then
-        local processed = processCode(code)
-        if processed then
-            table.insert(codeFragments, processed)
-        end
+-- Перехват load
+local originalLoad = load or function() end -- Заглушка, если load отсутствует
+load = HookFunction(originalLoad, function(code, ...)
+    local processed = processCode(code)
+    if processed then
+        table.insert(codeFragments, processed)
     end
-    return originalLoadstring(code, ...)
-end
+end, "load")
 
--- Перехватываем execute (если доступно)
-local customExecute = function(code)
-    if type(code) == "string" then
-        local processed = processCode(code)
-        if processed then
-            table.insert(codeFragments, processed)
-        end
+-- Перехват loadstring
+local originalLoadstring = loadstring or function() end -- Заглушка, если loadstring отсутствует
+loadstring = HookFunction(originalLoadstring, function(code, ...)
+    local processed = processCode(code)
+    if processed then
+        table.insert(codeFragments, processed)
     end
-    local func, err = customLoadstring(code)
+end, "loadstring")
+
+-- Перехват execute (если доступно)
+local originalExecute = _G.execute or function() end -- Заглушка, если execute отсутствует
+local customExecute = HookFunction(originalExecute, function(code)
+    local processed = processCode(code)
+    if processed then
+        table.insert(codeFragments, processed)
+    end
+    local func, err = loadstring(code)
     if not func then
         error(err)
     end
     return func()
+end, "execute")
+
+-- Заменяем функции в глобальном окружении с обходом защиты
+local function SafeSetGlobal(name, func)
+    local success, _ = pcall(function()
+        rawset(_G, name, func)
+    end)
+    if not success and getfenv then
+        local env = getfenv()
+        rawset(env, name, func)
+    end
 end
 
--- Заменяем функции в глобальном окружении
-_G.load = customLoad
-_G.loadstring = customLoadstring
-_G.execute = customExecute
-if getfenv then
-    local env = getfenv()
-    env.load = customLoad
-    env.loadstring = customLoadstring
-    env.execute = customExecute
+SafeSetGlobal("load", load)
+SafeSetGlobal("loadstring", loadstring)
+SafeSetGlobal("execute", customExecute)
+
+-- Дополнительный перехват через rawset для защищённых сред
+local function DeepHook(table, key, hook_func)
+    local original = rawget(table, key) or function() end
+    rawset(table, key, HookFunction(original, hook_func, key))
 end
+
+DeepHook(_G, "load", function(code, ...)
+    local processed = processCode(code)
+    if processed then
+        table.insert(codeFragments, processed)
+    end
+end)
+DeepHook(_G, "loadstring", function(code, ...)
+    local processed = processCode(code)
+    if processed then
+        table.insert(codeFragments, processed)
+    end
+end)
 
 -- Основной цикл: сохраняем исходный код
 coroutine.wrap(function()
