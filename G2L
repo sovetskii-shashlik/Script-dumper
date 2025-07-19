@@ -36,15 +36,6 @@ local Properties = {
     },
     UIStroke = {
         "ApplyStrokeMode", "Color", "Enabled", "LineJoinMode", "Thickness", "Transparency"
-    },
-    LocalScript = {
-        "Source", "Enabled"
-    },
-    ModuleScript = {
-        "Source"
-    },
-    Script = {
-        "Source", "Disabled"
     }
 };
 local Clone = {
@@ -58,7 +49,7 @@ local Clone = {
 }
 
 for _, Class in next, JSON.Classes do
-    if Class.MemoryCategory == "Gui" or Class.MemoryCategory == "Script" then
+    if Class.MemoryCategory == "Gui" then
         local ClassName = Class.Name
         Properties[ClassName] = Properties[ClassName] or Properties[Clone[ClassName]] or {};
 
@@ -95,7 +86,6 @@ local function IdentifiersGet(Instance)
 end
 
 local function FormatDigit(n)
-    if n == nil then return "nil" end
     for i = 0, 30 do
         local Number = format(
             "%." .. tostring(i) .. "f",
@@ -112,58 +102,68 @@ local function FormatDigit(n)
 end
 
 local function FormatValue(Value)
-    if Value == nil then return "nil" end
-    local Type = typeof(Value)
-    
-    if Type == "string" then
-        return format("\"%s\"", Value:gsub("\"", "\\\""):gsub("\n", "\\n"))
-    elseif Type == "Vector2" then
-        return format("Vector2.new(%s, %s)", FormatDigit(Value.X), FormatDigit(Value.Y))
-    elseif Type == "UDim2" then
-        local X, Y = Value.X, Value.Y
-        return format("UDim2.new(%s, %s, %s, %s)", FormatDigit(X.Scale), FormatDigit(X.Offset), FormatDigit(Y.Scale), FormatDigit(Y.Offset))
-    elseif Type == "UDim" then
-        return format("UDim.new(%s, %s)", FormatDigit(Value.Scale), FormatDigit(Value.Offset))
-    elseif Type == "Color3" then
-        return format("Color3.fromRGB(%d, %d, %d)", Value.R * 255, Value.G * 255, Value.B * 255)
-    elseif Type == "Font" then
-        return format("Font.new(%s, %s, %s)", FormatValue(Value.Family), FormatValue(Value.Weight), FormatValue(Value.Style))
-    elseif Type == "Instance" then
-        if Value == workspace then
-            return "workspace"
-        elseif Value == game then
-            return "game"
-        elseif Value == game:GetService("CoreGui") then
-            return "game:GetService(\"CoreGui\")"
+    return (({
+        ["string"] = function()
+            return format("\"%s\"", Value:gsub("\"", "\\\""):gsub("\n", "\\n"))
+        end,
+        ["Vector2"] = function()
+            return format("Vector2.new(%s, %s)", FormatDigit(Value.X), FormatDigit(Value.Y))
+        end,
+        ["UDim2"] = function()
+            local X, Y = Value.X, Value.Y
+            return format("UDim2.new(%s, %s, %s, %s)", FormatDigit(X.Scale), FormatDigit(X.Offset), FormatDigit(Y.Scale), FormatDigit(Y.Offset))
+        end,
+        ["UDim"] = function()
+            return format("UDim.new(%s, %s)", FormatDigit(Value.Scale), FormatDigit(Value.Offset))
+        end,
+        ["Color3"] = function()
+            return format("Color3.fromRGB(%d, %d, %d)", Value.R * 255, Value.G * 255, Value.B * 255)
+        end,
+        ["Font"] = function()
+            return format("Font.new(%s, %s, %s)", FormatValue(Value.Family), FormatValue(Value.Weight), FormatValue(Value.Style))
+        end,
+        ["Content"] = function()
+            return format("Content.fromUri(%s)", FormatValue(Value.Uri))
+        end,
+        ["Rect"] = function()
+            local Min, Max = Value.Min, Value.Max;
+            return format("Rect.new(%d, %d, %d, %d)", FormatDigit(Min.X), FormatDigit(Min.Y), FormatDigit(Max.X), FormatDigit(Max.Y))
+        end,
+        ["Instance"] = function()
+            if Value == workspace then
+                return "workspace"
+            elseif Value == game then
+                return "game"
+            elseif Value == game:GetService("CoreGui") then
+                return "game:GetService(\"CoreGui\")"
+            end
+
+            local Path = {};
+            local P = Value
+            
+            while P and P ~= game do
+                tinsert(Path, {Instance=P,Index=#Path+1})
+                P = P.Parent
+            end
+
+            table.sort(Path, function(a, b)
+                return a.Index > b.Index
+            end)
+
+            local Result = format("game:GetService(%s)", FormatValue(Path[2].Instance.ClassName));
+            Path[1] = nil
+            Path[2] = nil
+
+            for _, V in next, Path do
+                Result = Result .. format(":FindFirstChild(%s)", FormatValue(V.Instance.Name))
+            end
+
+            Result = Result:gsub("game:GetService%(\"Players\"):FindFirstChild%(\"" .. Player.Name .. "\"%)", "game:GetService(\"Players\").LocalPlayer")
+            Result = Result:gsub("game:GetService(\"Workspace\")", "workspace")
+
+            return Result
         end
-
-        local Path = {};
-        local P = Value
-
-        while P and P ~= game do
-            tinsert(Path, {Instance=P,Index=#Path+1})
-            P = P.Parent
-        end
-
-        table.sort(Path, function(a, b)
-            return a.Index > b.Index
-        end)
-
-        local Result = format("game:GetService(%s)", FormatValue(Path[2].Instance.ClassName));
-        Path[1] = nil
-        Path[2] = nil
-
-        for _, V in next, Path do
-            Result = Result .. format(":FindFirstChild(%s)", FormatValue(V.Instance.Name))
-        end
-
-        Result = Result:gsub("game:GetService%(\"Players\"):FindFirstChild%(\"" .. Player.Name .. "\"%)", "game:GetService(\"Players\").LocalPlayer")
-        Result = Result:gsub("game:GetService(\"Workspace\")", "workspace")
-
-        return Result
-    else
-        return tostring(Value)
-    end
+    })[typeof(Value)] or function()return tostring(Value) end)()
 end
 
 local function SafeGet(I, P)
@@ -172,20 +172,12 @@ local function SafeGet(I, P)
     end)
 end
 
-local function GetScriptSource(Script)
-    local Success, Source = pcall(function()
-        return Script.Source
-    end)
-    return Success and Source or "-- Failed to get source"
-end
-
 local function StealGui(Gui)
     local start = tick()
     local Table = "a"
-    local ScriptsTable = "b"
 
     local Code = "";
-    local bin = format("local %s = {}\nlocal %s = {}\n", Table, ScriptsTable)
+    local bin = format("local %s = {", Table)
 
     local Defaults = {};
 
@@ -194,52 +186,34 @@ local function StealGui(Gui)
             wait();
         end
         local Class = Instance.ClassName
-        local TargetTable = Instance:IsA("Script") and ScriptsTable or Table
-        
-        bin = bin .. format("%s[\"%s\"] = Instance.new(\"%s\")\n", TargetTable, IdentifiersGet(Instance), Class)
+        bin = bin .. format("\n\t[\"%s\"] = Instance.new(\"%s\"),", IdentifiersGet(Instance), Class)
 
-        if Instance:IsA("Script") then
-            local Source = GetScriptSource(Instance)
-            Code = Code .. format("%s[\"%s\"].Source = %s\n", TargetTable, IdentifiersGet(Instance), FormatValue(Source))
-            
-            if Instance:IsA("LocalScript") then
-                local Enabled = SafeGet(Instance, "Enabled")
-                if Enabled then
-                    Code = Code .. format("%s[\"%s\"].Enabled = %s\n", TargetTable, IdentifiersGet(Instance), tostring(Enabled))
-                end
-            else
-                local Disabled = SafeGet(Instance, "Disabled")
-                if Disabled then
-                    Code = Code .. format("%s[\"%s\"].Disabled = %s\n", TargetTable, IdentifiersGet(Instance), tostring(Disabled))
-                end
+        for _, Property in next, (Properties[Class] or {}) do
+            local Default = Defaults[Class] or Instance_new(Class);
+
+            local Success, Value = SafeGet(Instance, Property)
+            local Success2, Value2 = SafeGet(Default, Property)
+
+            if Success and Success2 and Value ~= Value2 then
+                local Formatted = typeof(Value) == "Instance" and format("%s[%s]", Table, FormatValue(IdentifiersGet(Value))) or FormatValue(Value)
+
+                Code = Code .. format("%s[\"%s\"][\"%s\"] = %s\n", Table, IdentifiersGet(Instance), Property, Formatted)
             end
-        else
-            for _, Property in next, (Properties[Class] or {}) do
-                local Default = Defaults[Class] or Instance_new(Class);
 
-                local Success, Value = SafeGet(Instance, Property)
-                local Success2, Value2 = SafeGet(Default, Property)
-
-                if Success and Success2 and Value ~= Value2 then
-                    local Formatted = typeof(Value) == "Instance" and format("%s[%s]", Value:IsA("Script") and ScriptsTable or Table, FormatValue(IdentifiersGet(Value))) or FormatValue(Value)
-
-                    Code = Code .. format("%s[\"%s\"][\"%s\"] = %s\n", TargetTable, IdentifiersGet(Instance), Property, Formatted)
-                end
-
-                Defaults[Class] = Default
-            end
+            Defaults[Class] = Default
         end
 
-        Code = Code .. format("%s[\"%s\"][\"%s\"] = %s\n", Instance:IsA("Script") and ScriptsTable or Table, IdentifiersGet(Instance), "Name", FormatValue(Instance.Name))
+        Code = Code .. format("%s[\"%s\"][\"%s\"] = %s\n", Table, IdentifiersGet(Instance), "Name", FormatValue(Instance.Name))
         if _ == 1 then
             Code = Code .. format("%s[\"%s\"][\"%s\"] = %s\n", Table, IdentifiersGet(Instance), "Parent", FormatValue(Gui.Parent))
         else
-            local ParentTable = Instance.Parent:IsA("Script") and ScriptsTable or Table
-            Code = Code .. format("%s[\"%s\"][\"%s\"] = %s[\"%s\"]\n", TargetTable, IdentifiersGet(Instance), "Parent", ParentTable, IdentifiersGet(Instance.Parent))
+            Code = Code .. format("%s[\"%s\"][\"%s\"] = %s[\"%s\"]\n", Table, IdentifiersGet(Instance), "Parent", Table, IdentifiersGet(Instance.Parent))
         end
 
         Code = Code .. "\n"
     end
+
+    bin = sub(bin, 1, -2) .. "\n}\n\n"
 
     return bin .. Code, tick() - start
 end
