@@ -8,7 +8,7 @@ local isfile, writefile = isfile or function(...)end, writefile or function(...)
 local spawn, wait, tostring, tonumber = task.spawn, task.wait, tostring, tonumber
 
 local tinsert, tfind, tremove = table.insert, table.find, table.remove
-local format, sub, rep, match = string.format, string.sub, string.rep, string.match
+local format, sub, rep, match, gsub = string.format, string.sub, string.rep, string.match, string.gsub
 local floor = math.floor
 
 local Instance_new = Instance.new
@@ -36,8 +36,18 @@ local Properties = {
     },
     UIStroke = {
         "ApplyStrokeMode", "Color", "Enabled", "LineJoinMode", "Thickness", "Transparency"
+    },
+    LocalScript = {
+        "Source", "Enabled"
+    },
+    ModuleScript = {
+        "Source"
+    },
+    Script = {
+        "Source", "Disabled"
     }
 };
+
 local Clone = {
     Frame = "GuiObject",
     TextLabel = "GuiObject",
@@ -49,7 +59,7 @@ local Clone = {
 }
 
 for _, Class in next, JSON.Classes do
-    if Class.MemoryCategory == "Gui" then
+    if Class.MemoryCategory == "Gui" or Class.MemoryCategory == "Script" then
         local ClassName = Class.Name
         Properties[ClassName] = Properties[ClassName] or Properties[Clone[ClassName]] or {};
 
@@ -140,7 +150,7 @@ local function FormatValue(Value)
 
             local Path = {};
             local P = Value
-            
+
             while P and P ~= game do
                 tinsert(Path, {Instance=P,Index=#Path+1})
                 P = P.Parent
@@ -172,6 +182,75 @@ local function SafeGet(I, P)
     end)
 end
 
+local function GetScriptSource(scriptInstance)
+    local success, source = pcall(function()
+        return scriptInstance.Source
+    end)
+    return success and source or "-- Error getting script source"
+end
+
+local function GetEventConnections(instance)
+    local connections = {}
+    
+    -- Get all events of the instance
+    for _, member in pairs(getmembers(instance)) do
+        if typeof(member) == "RBXScriptSignal" then
+            local connectionList = getconnections(member)
+            if #connectionList > 0 then
+                connections[member] = connectionList
+            end
+        end
+    end
+    
+    return connections
+end
+
+local function GenerateEventCode(instance, tableName)
+    local code = ""
+    local connections = GetEventConnections(instance)
+    
+    for event, connectionList in pairs(connections) do
+        for _, connection in ipairs(connectionList) do
+            local func = connection.Function
+            if func then
+                -- Get the function source (this is a simplified approach)
+                local funcSource = tostring(func):match("function: (.-)\n") or "function() --[[connection function]] end"
+                code = code .. format("%s[\"%s\"].%s:Connect(%s)\n", 
+                    tableName, 
+                    IdentifiersGet(instance), 
+                    tostring(event):match("%w+$"), 
+                    funcSource)
+            end
+        end
+    end
+    
+    return code
+end
+
+local function GenerateScriptCode(scriptInstance, tableName)
+    local source = GetScriptSource(scriptInstance)
+    local disabled = scriptInstance:IsA("Script") and scriptInstance.Disabled or false
+    
+    local code = format("%s[\"%s\"].Source = %s\n", 
+        tableName, 
+        IdentifiersGet(scriptInstance), 
+        FormatValue(source))
+    
+    if scriptInstance:IsA("Script") then
+        code = code .. format("%s[\"%s\"].Disabled = %s\n", 
+            tableName, 
+            IdentifiersGet(scriptInstance), 
+            tostring(disabled))
+    elseif scriptInstance:IsA("LocalScript") then
+        code = code .. format("%s[\"%s\"].Enabled = %s\n", 
+            tableName, 
+            IdentifiersGet(scriptInstance), 
+            tostring(scriptInstance.Enabled))
+    end
+    
+    return code
+end
+
 local function StealGui(Gui)
     local start = tick()
     local Table = "a"
@@ -188,19 +267,25 @@ local function StealGui(Gui)
         local Class = Instance.ClassName
         bin = bin .. format("\n\t[\"%s\"] = Instance.new(\"%s\"),", IdentifiersGet(Instance), Class)
 
-        for _, Property in next, (Properties[Class] or {}) do
-            local Default = Defaults[Class] or Instance_new(Class);
+        -- Handle scripts differently
+        if Instance:IsA("Script") or Instance:IsA("LocalScript") or Instance:IsA("ModuleScript") then
+            Code = Code .. GenerateScriptCode(Instance, Table)
+        else
+            -- Handle GUI properties
+            for _, Property in next, (Properties[Class] or {}) do
+                local Default = Defaults[Class] or Instance_new(Class);
 
-            local Success, Value = SafeGet(Instance, Property)
-            local Success2, Value2 = SafeGet(Default, Property)
+                local Success, Value = SafeGet(Instance, Property)
+                local Success2, Value2 = SafeGet(Default, Property)
 
-            if Success and Success2 and Value ~= Value2 then
-                local Formatted = typeof(Value) == "Instance" and format("%s[%s]", Table, FormatValue(IdentifiersGet(Value))) or FormatValue(Value)
+                if Success and Success2 and Value ~= Value2 then
+                    local Formatted = typeof(Value) == "Instance" and format("%s[%s]", Table, FormatValue(IdentifiersGet(Value))) or FormatValue(Value)
 
-                Code = Code .. format("%s[\"%s\"][\"%s\"] = %s\n", Table, IdentifiersGet(Instance), Property, Formatted)
+                    Code = Code .. format("%s[\"%s\"][\"%s\"] = %s\n", Table, IdentifiersGet(Instance), Property, Formatted)
+                end
+
+                Defaults[Class] = Default
             end
-
-            Defaults[Class] = Default
         end
 
         Code = Code .. format("%s[\"%s\"][\"%s\"] = %s\n", Table, IdentifiersGet(Instance), "Name", FormatValue(Instance.Name))
@@ -210,6 +295,9 @@ local function StealGui(Gui)
             Code = Code .. format("%s[\"%s\"][\"%s\"] = %s[\"%s\"]\n", Table, IdentifiersGet(Instance), "Parent", Table, IdentifiersGet(Instance.Parent))
         end
 
+        -- Generate event connection code
+        Code = Code .. GenerateEventCode(Instance, Table)
+        
         Code = Code .. "\n"
     end
 
