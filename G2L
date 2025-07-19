@@ -1,0 +1,221 @@
+local Players = game:GetService("Players")
+local Player = Players.LocalPlayer
+print("Started")
+local Settings_NoCrash = false
+
+local isfile, writefile = isfile or function(...)end, writefile or function(...)end
+
+local spawn, wait, tostring, tonumber = task.spawn, task.wait, tostring, tonumber
+
+local tinsert, tfind, tremove = table.insert, table.find, table.remove
+local format, sub, rep, match = string.format, string.sub, string.rep, string.match
+local floor = math.floor
+
+local Instance_new = Instance.new
+
+local JSON = isfile('robloxproperties.json') and readfile('robloxproperties.json') or game:HttpGet("https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/refs/heads/roblox/Mini-API-Dump.json")
+if not isfile("robloxproperties.json") then spawn(writefile, "robloxproperties.json", JSON) end
+
+JSON = game:GetService("HttpService"):JSONDecode(JSON)
+
+local Properties = {
+    GuiObject = {
+        "Position", "Size", "AnchorPoint", "AutomaticSize"
+    },
+    UIListLayout = {
+        "Padding", "SortOrder", "HorizontalAlignment", "FillDirection", "VerticalAlignment"
+    },
+    UISizeConstraint = {
+        "MaxSize"
+    },
+    UIAspectRatioConstraint = {
+        "AspectRatio", "AspectType", "DominantAxis"
+    },
+    UICorner = {
+        "CornerRadius"
+    },
+    UIStroke = {
+        "ApplyStrokeMode", "Color", "Enabled", "LineJoinMode", "Thickness", "Transparency"
+    }
+};
+local Clone = {
+    Frame = "GuiObject",
+    TextLabel = "GuiObject",
+    TextButton = "GuiObject",
+    TextBox = "GuiObject",
+    ImageLabel = "GuiObject",
+    ImageButton = "GuiObject",
+    ScrollingFrame = "GuiObject"
+}
+
+for _, Class in next, JSON.Classes do
+    if Class.MemoryCategory == "Gui" then
+        local ClassName = Class.Name
+        Properties[ClassName] = Properties[ClassName] or Properties[Clone[ClassName]] or {};
+
+        for _, Property in next, Class.Members do
+            local Tags = Property.Tags or {}
+            if Property.MemberType == "Property" and not tfind(Tags, "ReadOnly") and not tfind(Tags, "Deprecated") and not tfind(Tags, "Hidden") and not tfind(Properties[ClassName], Property.Name) then
+                tinsert(Properties[ClassName], Property.Name)
+            end
+        end
+    end
+end
+
+local IdentifiersArray = {}
+local Identifiers = {};
+
+local function IdentifiersGet(Instance)
+    local Identifier = Identifiers[Instance]
+    if Identifier then
+        return Identifier
+    end
+    Identifier = Instance.Name
+    local dupeCount = 1
+
+    while tfind(IdentifiersArray, Identifier .. (dupeCount == 1 and "" or " " .. dupeCount)) do
+        dupeCount += 1
+    end
+
+    Identifier = Identifier .. (dupeCount == 1 and "" or " " .. dupeCount)
+
+    tinsert(IdentifiersArray, Identifier)
+
+    Identifiers[Instance] = Identifier
+    return Identifier
+end
+
+local function FormatDigit(n)
+    for i = 0, 30 do
+        local Number = format(
+            "%." .. tostring(i) .. "f",
+            n
+        )
+
+        if tonumber(Number) == n or i == 30 then
+            if tonumber(match(Number, "(%d+)%.")) == 0 then
+                Number = sub(Number, 2)
+            end
+            return Number
+        end
+    end
+end
+
+local function FormatValue(Value)
+    return (({
+        ["string"] = function()
+            return format("\"%s\"", Value:gsub("\"", "\\\""):gsub("\n", "\\n"))
+        end,
+        ["Vector2"] = function()
+            return format("Vector2.new(%s, %s)", FormatDigit(Value.X), FormatDigit(Value.Y))
+        end,
+        ["UDim2"] = function()
+            local X, Y = Value.X, Value.Y
+            return format("UDim2.new(%s, %s, %s, %s)", FormatDigit(X.Scale), FormatDigit(X.Offset), FormatDigit(Y.Scale), FormatDigit(Y.Offset))
+        end,
+        ["UDim"] = function()
+            return format("UDim.new(%s, %s)", FormatDigit(Value.Scale), FormatDigit(Value.Offset))
+        end,
+        ["Color3"] = function()
+            return format("Color3.fromRGB(%d, %d, %d)", Value.R * 255, Value.G * 255, Value.B * 255)
+        end,
+        ["Font"] = function()
+            return format("Font.new(%s, %s, %s)", FormatValue(Value.Family), FormatValue(Value.Weight), FormatValue(Value.Style))
+        end,
+        ["Content"] = function()
+            return format("Content.fromUri(%s)", FormatValue(Value.Uri))
+        end,
+        ["Rect"] = function()
+            local Min, Max = Value.Min, Value.Max;
+            return format("Rect.new(%d, %d, %d, %d)", FormatDigit(Min.X), FormatDigit(Min.Y), FormatDigit(Max.X), FormatDigit(Max.Y))
+        end,
+        ["Instance"] = function()
+            if Value == workspace then
+                return "workspace"
+            elseif Value == game then
+                return "game"
+            elseif Value == game:GetService("CoreGui") then
+                return "game:GetService(\"CoreGui\")"
+            end
+
+            local Path = {};
+            local P = Value
+            
+            while P and P ~= game do
+                tinsert(Path, {Instance=P,Index=#Path+1})
+                P = P.Parent
+            end
+
+            table.sort(Path, function(a, b)
+                return a.Index > b.Index
+            end)
+
+            local Result = format("game:GetService(%s)", FormatValue(Path[2].Instance.ClassName));
+            Path[1] = nil
+            Path[2] = nil
+
+            for _, V in next, Path do
+                Result = Result .. format(":FindFirstChild(%s)", FormatValue(V.Instance.Name))
+            end
+
+            Result = Result:gsub("game:GetService%(\"Players\"):FindFirstChild%(\"" .. Player.Name .. "\"%)", "game:GetService(\"Players\").LocalPlayer")
+            Result = Result:gsub("game:GetService(\"Workspace\")", "workspace")
+
+            return Result
+        end
+    })[typeof(Value)] or function()return tostring(Value) end)()
+end
+
+local function SafeGet(I, P)
+    return pcall(function()
+        return I[P]
+    end)
+end
+
+local function StealGui(Gui)
+    local start = tick()
+    local Table = "a"
+
+    local Code = "";
+    local bin = format("local %s = {", Table)
+
+    local Defaults = {};
+
+    for _, Instance in next, {Gui, unpack(Gui:GetDescendants())} do
+        if Settings_NoCrash then
+            wait();
+        end
+        local Class = Instance.ClassName
+        bin = bin .. format("\n\t[\"%s\"] = Instance.new(\"%s\"),", IdentifiersGet(Instance), Class)
+
+        for _, Property in next, (Properties[Class] or {}) do
+            local Default = Defaults[Class] or Instance_new(Class);
+
+            local Success, Value = SafeGet(Instance, Property)
+            local Success2, Value2 = SafeGet(Default, Property)
+
+            if Success and Success2 and Value ~= Value2 then
+                local Formatted = typeof(Value) == "Instance" and format("%s[%s]", Table, FormatValue(IdentifiersGet(Value))) or FormatValue(Value)
+
+                Code = Code .. format("%s[\"%s\"][\"%s\"] = %s\n", Table, IdentifiersGet(Instance), Property, Formatted)
+            end
+
+            Defaults[Class] = Default
+        end
+
+        Code = Code .. format("%s[\"%s\"][\"%s\"] = %s\n", Table, IdentifiersGet(Instance), "Name", FormatValue(Instance.Name))
+        if _ == 1 then
+            Code = Code .. format("%s[\"%s\"][\"%s\"] = %s\n", Table, IdentifiersGet(Instance), "Parent", FormatValue(Gui.Parent))
+        else
+            Code = Code .. format("%s[\"%s\"][\"%s\"] = %s[\"%s\"]\n", Table, IdentifiersGet(Instance), "Parent", Table, IdentifiersGet(Instance.Parent))
+        end
+
+        Code = Code .. "\n"
+    end
+
+    bin = sub(bin, 1, -2) .. "\n}\n\n"
+
+    return bin .. Code, tick() - start
+end
+
+return StealGui
