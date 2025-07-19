@@ -190,6 +190,18 @@ local function SafeGet(I, P)
     end)
 end
 
+local function GetEvents(Instance)
+    local events = {}
+    local success, result = pcall(function()
+        for _, member in pairs(getmembers(Instance)) do
+            if typeof(member) == "RBXScriptSignal" then
+                table.insert(events, member.Name)
+            end
+        end
+    end)
+    return success and events or {}
+end
+
 local function StealGui(Gui)
     local start = tick()
     local Table = "a"
@@ -221,12 +233,10 @@ local function StealGui(Gui)
             Defaults[Class] = Default
         end
 
-        -- Capture connections to events
-        for _, member in pairs(Instance:GetPropertyChangedSignal()) do
-            local eventName = tostring(member)
-            if Instance[eventName] and typeof(Instance[eventName]) == "RBXScriptSignal" then
-                Code = Code .. format("-- Event: %s[\"%s\"].%s\n", Table, IdentifiersGet(Instance), eventName)
-            end
+        -- Capture events
+        local events = GetEvents(Instance)
+        for _, eventName in ipairs(events) do
+            Code = Code .. format("-- Event: %s[\"%s\"].%s\n", Table, IdentifiersGet(Instance), eventName)
         end
 
         Code = Code .. format("%s[\"%s\"][\"%s\"] = %s\n", Table, IdentifiersGet(Instance), "Name", FormatValue(Instance.Name))
