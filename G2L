@@ -48,6 +48,14 @@ local Clone = {
     ScrollingFrame = "GuiObject"
 }
 
+-- Extended property types to capture
+local PropertyTypesToCapture = {
+    "Property",
+    "Function",
+    "Event",
+    "Callback"
+}
+
 for _, Class in next, JSON.Classes do
     if Class.MemoryCategory == "Gui" then
         local ClassName = Class.Name
@@ -55,7 +63,11 @@ for _, Class in next, JSON.Classes do
 
         for _, Property in next, Class.Members do
             local Tags = Property.Tags or {}
-            if Property.MemberType == "Property" and not tfind(Tags, "ReadOnly") and not tfind(Tags, "Deprecated") and not tfind(Tags, "Hidden") and not tfind(Properties[ClassName], Property.Name) then
+            if tfind(PropertyTypesToCapture, Property.MemberType) and 
+               not tfind(Tags, "ReadOnly") and 
+               not tfind(Tags, "Deprecated") and 
+               not tfind(Tags, "Hidden") and 
+               not tfind(Properties[ClassName], Property.Name) then
                 tinsert(Properties[ClassName], Property.Name)
             end
         end
@@ -140,7 +152,7 @@ local function FormatValue(Value)
 
             local Path = {};
             local P = Value
-            
+
             while P and P ~= game do
                 tinsert(Path, {Instance=P,Index=#Path+1})
                 P = P.Parent
@@ -162,6 +174,12 @@ local function FormatValue(Value)
             Result = Result:gsub("game:GetService(\"Workspace\")", "workspace")
 
             return Result
+        end,
+        ["function"] = function()
+            return "function() end --[[ Original function placeholder ]]"
+        end,
+        ["RBXScriptSignal"] = function()
+            return "nil --[[ Event connection placeholder ]]"
         end
     })[typeof(Value)] or function()return tostring(Value) end)()
 end
@@ -201,6 +219,14 @@ local function StealGui(Gui)
             end
 
             Defaults[Class] = Default
+        end
+
+        -- Capture connections to events
+        for _, member in pairs(Instance:GetPropertyChangedSignal()) do
+            local eventName = tostring(member)
+            if Instance[eventName] and typeof(Instance[eventName]) == "RBXScriptSignal" then
+                Code = Code .. format("-- Event: %s[\"%s\"].%s\n", Table, IdentifiersGet(Instance), eventName)
+            end
         end
 
         Code = Code .. format("%s[\"%s\"][\"%s\"] = %s\n", Table, IdentifiersGet(Instance), "Name", FormatValue(Instance.Name))
