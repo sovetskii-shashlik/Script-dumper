@@ -1,6 +1,5 @@
 -- MOONSEC, LURAPH AND LUAOBFUSCATOR.COM NO WORK
--- Dumper: Intercept user-executed scripts (by Grok, enhanced for VM/Metatable bypass)
--- Dumps deobfuscated source code of user-executed scripts to MihaLogger/ShashlikEx/dump_code/dump.txt
+-- Dumper focused on deobfuscating the SOURCE CODE, not just loadstring
 
 if not writefile or not makefolder or not isfolder then
     error("This dumper requires an exploit with writefile and makefolder support (e.g., Synapse X, Krnl).")
@@ -9,147 +8,187 @@ end
 if not isfolder("MihaLogger") then
     makefolder("MihaLogger")
 end
-task.wait()
+if not isfolder("MihaLogger/ShashlikEx") then
+    makefolder("MihaLogger/ShashlikEx")
+end
 if not isfolder("MihaLogger/ShashlikEx/dump_code") then
     makefolder("MihaLogger/ShashlikEx/dump_code")
 end
-task.wait()
 
 local codeFragments = {}
 
 local function logToFile(content)
-    local fileName = "MihaLogger/ShashlikEx/dump_code/dump.txt"
-    local success, _ = pcall(function()
-        writefile(fileName, content)
-    end)
-    if not success then
-        rawset(_G, "dump_backup", content)
-    end
+    writefile("MihaLogger/ShashlikEx/dump_code/dump.txt", content)
 end
 
-local function deobfuscate(code)
-    local key = 0x5A
-    local decrypted = ""
-    for i = 1, #code do
-        local byte = string.byte(code, i)
-        decrypted = decrypted .. string.char(bit32.bxor(byte, key))
+local function aggressiveDeobfuscate(code)
+    if type(code) ~= "string" or #code < 10 then return code end
+    
+    local originalCode = code
+    local function decodeEscapes(str)
+        local decoded = str:gsub("\\x(%x%x)", function(hex)
+            return string.char(tonumber(hex, 16))
+        end)
+        decoded = decoded:gsub("\\(%d%d%d)", function(octal)
+            return string.char(tonumber(octal, 8))
+        end)
+        return decoded
     end
-    return decrypted
-end
-
-local function isObfuscated(code)
-    local nonPrintableCount = 0
-    for i = 1, #code do
-        local byte = string.byte(code, i)
-        if byte < 32 or byte > 126 then
-            nonPrintableCount = nonPrintableCount + 1
+    local function tryXORDecrypt(str, key)
+        local result = ""
+        for i = 1, #str do
+            local byte = string.byte(str, i)
+            result = result .. string.char(bit32.bxor(byte, key))
         end
+        return result
     end
-    return nonPrintableCount > (#code / 2)
-end
-
-local function processCode(code)
-    if type(code) == "string" and code ~= "" then
-        if isObfuscated(code) then
-            return deobfuscate(code)
-        else
-            return code
+    local function tryByteShift(str, shift)
+        local result = ""
+        for i = 1, #str do
+            local byte = string.byte(str, i)
+            result = result .. string.char((byte + shift) % 256)
         end
+        return result
     end
-    return nil
-end
-
-local function HookFunction(original, hook, method_name)
-    local mt = getrawmetatable(original) or {}
-    local new_func = function(...)
-        hook(...)
-        if mt.__call then
-            return mt.__call(original, ...)
+    local function tryReverse(str)
+        return string.reverse(str)
+    end
+    local function tryBase64Decode(str)
+        local base64Pattern = "[A-Za-z0-9+/][A-Za-z0-9+/][A-Za-z0-9+/][A-Za-z0-9+/]+=*"
+        local result = str
+        
+        for match in str:gmatch(base64Pattern) do
+            if #match >= 8 then
+                pcall(function()
+                    local decoded = game:GetService("HttpService"):JSONDecode('"'..match..'"')
+                    result = result:gsub(match, decoded)
+                end)
+            end
         end
-        return original(...)
+        return result
+    end
+    local function isValidLua(codeStr)
+        if type(codeStr) ~= "string" or #codeStr < 10 then return false end
+
+        local luaPatterns = {
+            "function%s", "local%s", "if%s", "then%s", "end", "for%s", "while%s", 
+            "return%s", "=", "%.%.%.", "%.%.", "%.", ":", "%-%-", "%[%[", "%]%]"
+        }
+        
+        local patternCount = 0
+        for _, pattern in ipairs(luaPatterns) do
+            if codeStr:match(pattern) then
+                patternCount = patternCount + 1
+            end
+        end
+
+        local loadSuccess = pcall(loadstring, codeStr)
+        
+        return patternCount > 3 or loadSuccess
+    end
+
+    local methods = {
+        {func = decodeEscapes, args = {originalCode}},
+        {func = tryBase64Decode, args = {originalCode}},
+        {func = tryReverse, args = {originalCode}},
+    }
+
+    for key = 1, 255 do
+        table.insert(methods, {func = tryXORDecrypt, args = {originalCode, key}})
+    end
+
+    for shift = -127, 127 do
+        table.insert(methods, {func = tryByteShift, args = {originalCode, shift}})
+    end
+ 
+    for _, method in ipairs(methods) do
+        local success, result = pcall(method.func, unpack(method.args))
+        if success and result and isValidLua(result) then
+            print("SUCCESS: Found valid Lua code with deobfuscation method")
+            return result
+        end
     end
     
-    if mt.__index or mt.__newindex then
-        local success, _ = pcall(setrawmetatable, original, {
-            __call = new_func,
-            __index = mt.__index,
-            __newindex = mt.__newindex
-        })
-        if not success then
-            return new_func
+    local decoded = decodeEscapes(originalCode)
+    if decoded ~= originalCode and isValidLua(decoded) then
+        return decoded
+    end
+    
+    return "-- OBFUSCATED CODE (COULD NOT DECODE) --\n" .. originalCode
+end
+
+local originalLoad = load
+load = function(code, chunkname, ...)
+    local processed = nil
+    
+    if type(code) == "string" and #code > 0 then
+        print("LOAD HOOK: Caught code execution, length: " .. #code)
+        
+        local nonPrintable = 0
+        for i = 1, math.min(#code, 1000) do
+            local byte = string.byte(code, i)
+            if byte < 32 or byte > 126 then
+                nonPrintable = nonPrintable + 1
+            end
+        end
+        
+        if nonPrintable > (#code / 3) then
+            print("DETECTED OBFUSCATED SOURCE CODE, ATTEMPTING DEOBFUSCATION...")
+            processed = aggressiveDeobfuscate(code)
+        else
+            processed = code
+        end
+        
+        if processed then
+            local sourceInfo = chunkname and ("-- Source: " .. chunkname) or "-- Source: load"
+            local entry = sourceInfo .. "\n" .. processed .. "\n" .. string.rep("=", 60) .. "\n"
+            table.insert(codeFragments, entry)
         end
     end
-    return new_func
+    
+    return originalLoad(code, chunkname, ...)
 end
 
-local originalLoad = load or function() end -- Заглушка, если load отсутствует
-load = HookFunction(originalLoad, function(code, ...)
-    local processed = processCode(code)
-    if processed then
-        table.insert(codeFragments, processed)
+local originalLoadstring = loadstring
+loadstring = function(code, chunkname)
+    local processed = nil
+    
+    if type(code) == "string" and #code > 0 then
+        print("LOADSTRING HOOK: Caught code execution, length: " .. #code)
+        
+        local nonPrintable = 0
+        for i = 1, math.min(#code, 1000) do
+            local byte = string.byte(code, i)
+            if byte < 32 or byte > 126 then
+                nonPrintable = nonPrintable + 1
+            end
+        end
+        
+        if nonPrintable > (#code / 3) then
+            print("DETECTED OBFUSCATED SOURCE IN LOADSTRING, ATTEMPTING DEOBFUSCATION...")
+            processed = aggressiveDeobfuscate(code)
+        else
+            processed = code
+        end
+        
+        if processed then
+            local sourceInfo = chunkname and ("-- Source: " .. chunkname) or "-- Source: loadstring"
+            local entry = sourceInfo .. "\n" .. processed .. "\n" .. string.rep("=", 60) .. "\n"
+            table.insert(codeFragments, entry)
+        end
     end
-end, "load")
-
-local originalLoadstring = loadstring or function() end
-loadstring = HookFunction(originalLoadstring, function(code, ...)
-    local processed = processCode(code)
-    if processed then
-        table.insert(codeFragments, processed)
-    end
-end, "loadstring")
-
-local originalExecute = _G.execute or function() end
-local customExecute = HookFunction(originalExecute, function(code)
-    local processed = processCode(code)
-    if processed then
-        table.insert(codeFragments, processed)
-    end
-    local func, err = loadstring(code)
-    if not func then
-        error(err)
-    end
-    return func()
-end, "execute")
-
-local function SafeSetGlobal(name, func)
-    local success, _ = pcall(function()
-        rawset(_G, name, func)
-    end)
-    if not success and getfenv then
-        local env = getfenv()
-        rawset(env, name, func)
-    end
+    
+    return originalLoadstring(code, chunkname)
 end
-
-SafeSetGlobal("load", load)
-SafeSetGlobal("loadstring", loadstring)
-SafeSetGlobal("execute", customExecute)
-
-local function DeepHook(table, key, hook_func)
-    local original = rawget(table, key) or function() end
-    rawset(table, key, HookFunction(original, hook_func, key))
-end
-
-DeepHook(_G, "load", function(code, ...)
-    local processed = processCode(code)
-    if processed then
-        table.insert(codeFragments, processed)
-    end
-end)
-DeepHook(_G, "loadstring", function(code, ...)
-    local processed = processCode(code)
-    if processed then
-        table.insert(codeFragments, processed)
-    end
-end)
 
 coroutine.wrap(function()
     while true do
         if #codeFragments > 0 then
             local unifiedSource = table.concat(codeFragments, "\n")
             logToFile(unifiedSource)
+            print("DUMPED " .. #codeFragments .. " CODE FRAGMENTS TO FILE")
             codeFragments = {}
         end
-        task.wait(5)
+        wait(2)
     end
 end)()
